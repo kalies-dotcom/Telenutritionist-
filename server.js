@@ -210,10 +210,12 @@ START SERVER
 ========================================
 */
 
-app.listen(PORT, () => {
-  console.log("=================================");
-  console.log("Nutrify Booking Backend");
-  console.log(`Server running on port ${PORT}`);
-  console.log("Infinity Connect integration enabled");
-  console.log("=================================");
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log("Nutrify Booking Backend");
+    console.log(`Server running on port ${PORT}`);
+    console.log("Infinity Connect integration enabled");
+  });
+}
+
+module.exports = app;
