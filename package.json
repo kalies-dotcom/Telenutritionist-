@@ -1,13 +1,18 @@
+
 {
   "name": "nutrify-booking-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Nutrify consultation booking backend with Infinity Connect WhatsApp integration",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js"
   },
-  "keywords": [],
+  "keywords": [
+    "nutrify",
+    "booking",
+    "infinity-connect",
+    "whatsapp"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
