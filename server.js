@@ -94,7 +94,7 @@ app.post("/api/bookings", async (req, res) => {
     }
 
     // Validate Infinity Connect credentials.
-    const apiKey = process.env.INFINITY_API_KEY;
+    const apiKey = process.env.INFINITY_API_KEY_NEW;
     const senderId = process.env.INFINITY_SENDER_ID;
 
     if (!apiKey || !senderId) {
