@@ -7,7 +7,17 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
-
+app.get("/api/config-check", (req, res) => {
+  res.json({
+    infinityApiKeyPresent: Boolean(
+      process.env.INFINITY_API_KEY?.trim()
+    ),
+    infinitySenderIdPresent: Boolean(
+      process.env.INFINITY_SENDER_ID?.trim()
+    ),
+    nodeEnvironment: process.env.NODE_ENV || "not set"
+  });
+});
 const INFINITY_API_URL =
   "https://dev.infinityconnect.ai/config-service/api/v1/public/templates/appoinment-fixed-message/send";
 
