@@ -138,20 +138,20 @@ app.post("/api/bookings", async (req, res) => {
       // The provider returned plain text rather than JSON.
     }
 
-    if (!infinityResponse.ok) {
-      console.error(
-        "Infinity Connect API error:",
-        infinityResponse.status,
-        responseText
-      );
+  if (!infinityResponse.ok) {
+  console.error(
+    "Infinity Connect API error:",
+    infinityResponse.status,
+    responseText
+  );
 
-      return res.status(502).json({
-        success: false,
-        message:
-          "Infinity Connect rejected the appointment message.",
-        provider_status: infinityResponse.status
-      });
-    }
+  return res.status(502).json({
+    success: false,
+    message: "Infinity Connect rejected the appointment message.",
+    provider_status: infinityResponse.status,
+    provider_details: providerResponse
+  });
+}
 
     console.log(
       "Infinity Connect accepted the booking message:",
