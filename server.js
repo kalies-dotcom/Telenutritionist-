@@ -53,12 +53,24 @@ async function getShopifyToken() {
     }
   );
 
-  const result = await response.json();
+ const responseText = await response.text();
 
-  if (!response.ok || !result.access_token) {
-    console.error("Shopify token request failed:", response.status);
-    throw new Error("Shopify authentication failed.");
-  }
+let result;
+try {
+  result = JSON.parse(responseText);
+} catch {
+  result = {};
+}
+
+if (!response.ok || !result.access_token) {
+  console.error("Shopify token request failed:", {
+    status: response.status,
+    error: result.error || "unknown_error",
+    description: result.error_description || "No error description returned"
+  });
+
+  throw new Error("Shopify authentication failed.");
+}
 
   cachedShopifyToken = result.access_token;
   tokenExpiresAt =
