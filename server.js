@@ -21,8 +21,8 @@ let cachedShopifyToken = null;
 let tokenExpiresAt = 0;
 
 function getShopDomain() {
-  const shop = (process.env.SHOPIFY_SHOP || "").trim();
-  return shop
+  return (process.env.SHOPIFY_SHOP || "")
+    .trim()
     .replace(/^https?:\/\//i, "")
     .replace(/\/+$/, "");
 }
@@ -40,12 +40,15 @@ async function getShopifyToken() {
     throw new Error("Shopify environment variables are missing.");
   }
 
+  // Shopify Client Credentials grant: form-encoded request.
   const response = await fetch(
     `https://${shop}/admin/oauth/access_token`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
         grant_type: "client_credentials",
         client_id: clientId,
         client_secret: clientSecret
@@ -53,24 +56,25 @@ async function getShopifyToken() {
     }
   );
 
- const responseText = await response.text();
+  const responseText = await response.text();
 
-let result;
-try {
-  result = JSON.parse(responseText);
-} catch {
-  result = {};
-}
+  let result;
+  try {
+    result = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    result = {};
+  }
 
-if (!response.ok || !result.access_token) {
-  console.error("Shopify token request failed:", {
-    status: response.status,
-    error: result.error || "unknown_error",
-    description: result.error_description || "No error description returned"
-  });
+  if (!response.ok || !result.access_token) {
+    console.error("Shopify token request failed:", {
+      status: response.status,
+      error: result.error || "unknown_error",
+      description:
+        result.error_description || "No error description returned"
+    });
 
-  throw new Error("Shopify authentication failed.");
-}
+    throw new Error("Shopify authentication failed.");
+  }
 
   cachedShopifyToken = result.access_token;
   tokenExpiresAt =
@@ -103,6 +107,7 @@ async function shopifyGraphQL(query, variables = {}) {
       response.status,
       JSON.stringify(result.errors || [])
     );
+
     throw new Error("Shopify API request failed.");
   }
 
@@ -138,6 +143,7 @@ async function getMetaobjectDefinition() {
 
 async function createBookingMetaobject(booking) {
   const definition = await getMetaobjectDefinition();
+
   const fieldKeys = new Set(
     definition.fieldDefinitions.map(field => field.key)
   );
@@ -177,7 +183,9 @@ async function createBookingMetaobject(booking) {
 
   if (missing.length) {
     throw new Error(
-      `Required metaobject fields missing: ${missing.map(f => f.key).join(", ")}`
+      `Required metaobject fields missing: ${missing
+        .map(field => field.key)
+        .join(", ")}`
     );
   }
 
@@ -209,6 +217,7 @@ async function createBookingMetaobject(booking) {
       "Metaobject creation errors:",
       JSON.stringify(result.userErrors || [])
     );
+
     throw new Error("Shopify could not create the booking.");
   }
 
@@ -217,6 +226,7 @@ async function createBookingMetaobject(booking) {
 
 async function updateBookingMetaobject(id, values) {
   const definition = await getMetaobjectDefinition();
+
   const fieldKeys = new Set(
     definition.fieldDefinitions.map(field => field.key)
   );
@@ -253,6 +263,7 @@ async function updateBookingMetaobject(id, values) {
       "Metaobject update errors:",
       JSON.stringify(result.userErrors || [])
     );
+
     throw new Error("Shopify could not update the booking.");
   }
 }
@@ -310,7 +321,11 @@ app.get("/api/shopify-status", async (req, res) => {
 app.get("/test-shopify", async (req, res) => {
   try {
     await getShopifyToken();
-    res.json({ success: true, message: "Shopify authentication succeeded." });
+
+    res.json({
+      success: true,
+      message: "Shopify authentication succeeded."
+    });
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -340,8 +355,6 @@ app.get("/test-metaobject", async (req, res) => {
 });
 
 app.post("/api/bookings", async (req, res) => {
-  let savedBooking = null;
-
   try {
     const {
       customer_name,
@@ -361,7 +374,8 @@ app.post("/api/bookings", async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "Name, WhatsApp number, booking date and booking time are required."
+        message:
+          "Name, WhatsApp number, booking date and booking time are required."
       });
     }
 
@@ -372,8 +386,10 @@ app.post("/api/bookings", async (req, res) => {
       });
     }
 
-    if (!process.env.INFINITY_API_KEY_NEW ||
-        !process.env.INFINITY_SENDER_ID) {
+    if (
+      !process.env.INFINITY_API_KEY_NEW ||
+      !process.env.INFINITY_SENDER_ID
+    ) {
       return res.status(500).json({
         success: false,
         message: "WhatsApp service is not configured."
@@ -391,8 +407,8 @@ app.post("/api/bookings", async (req, res) => {
       nutritionist_name: String(nutritionist_name || "").trim()
     };
 
-    // Save the booking first so a WhatsApp failure doesn't lose it.
-    savedBooking = await createBookingMetaobject(booking);
+    // Save first so a WhatsApp failure does not lose the booking.
+    const savedBooking = await createBookingMetaobject(booking);
 
     let infinityStatus = "sent";
     let infinityMessageId = "accepted";
@@ -419,23 +435,28 @@ app.post("/api/bookings", async (req, res) => {
       });
 
       const responseText = await infinityResponse.text();
-      let providerResponse = responseText;
 
+      let providerResponse = responseText;
       try {
-        providerResponse = responseText ? JSON.parse(responseText) : null;
+        providerResponse = responseText
+          ? JSON.parse(responseText)
+          : null;
       } catch {}
 
       if (!infinityResponse.ok) {
         infinityStatus = "failed";
         infinityMessageId = "None";
-        infinityError = `Infinity Connect HTTP ${infinityResponse.status}`;
+        infinityError =
+          `Infinity Connect HTTP ${infinityResponse.status}`;
       } else {
         const providerId =
           providerResponse?.messageId ||
           providerResponse?.message_id ||
           providerResponse?.id;
 
-        if (providerId) infinityMessageId = String(providerId);
+        if (providerId) {
+          infinityMessageId = String(providerId);
+        }
       }
     } catch (error) {
       infinityStatus = "failed";
@@ -455,7 +476,10 @@ app.post("/api/bookings", async (req, res) => {
       });
     } catch (error) {
       updateFailed = true;
-      console.error("Booking status update failed:", error.message);
+      console.error(
+        "Booking status update failed:",
+        error.message
+      );
     }
 
     return res.status(200).json({
@@ -469,7 +493,10 @@ app.post("/api/bookings", async (req, res) => {
       status_update_failed: updateFailed
     });
   } catch (error) {
-    console.error("Booking processing failed:", error.message);
+    console.error(
+      "Booking processing failed:",
+      error.message
+    );
 
     return res.status(500).json({
       success: false,
