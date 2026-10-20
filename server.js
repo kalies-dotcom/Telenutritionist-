@@ -5,20 +5,26 @@ const express = require("express");
 const cors = require("cors");
 const { randomUUID } = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
+const ExcelJS = require("exceljs");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "100kb" }));
 
 const INFINITY_API_URL =
   "https://dev.infinityconnect.ai/config-service/api/v1/public/templates/appoinment-fixed-message/send";
 
-// Supabase connection
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
 
+const allowedDashboardEmail = (
+  process.env.CLIENT_DASHBOARD_EMAIL || ""
+).trim().toLowerCase();
+
+// Server-side database client. Never expose this key in browser code.
 const supabase =
   supabaseUrl && supabaseSecretKey
     ? createClient(supabaseUrl, supabaseSecretKey, {
@@ -29,6 +35,63 @@ const supabase =
       })
     : null;
 
+// Public-key client for authentication only.
+const authClient =
+  supabaseUrl && supabaseAnonKey
+    ? createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false
+        }
+      })
+    : null;
+
+// Verify the token with Supabase and restrict access to the approved email.
+async function authorizeDashboard(req, res, next) {
+  try {
+    if (!supabase || !authClient || !allowedDashboardEmail) {
+      return res.status(500).json({
+        success: false,
+        message: "Dashboard authentication is not configured."
+      });
+    }
+
+    const authorization = req.headers.authorization || "";
+    const match = authorization.match(/^Bearer\s+(.+)$/i);
+
+    if (!match) {
+      return res.status(401).json({
+        success: false,
+        message: "Please sign in to continue."
+      });
+    }
+
+    const { data, error } = await authClient.auth.getUser(match[1]);
+
+    if (
+      error ||
+      !data.user ||
+      (data.user.email || "").trim().toLowerCase() !==
+        allowedDashboardEmail
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Your session is invalid or access is not permitted."
+      });
+    }
+
+    req.dashboardUser = data.user;
+    next();
+  } catch (error) {
+    console.error("Dashboard authorization failed:", error.message);
+
+    return res.status(401).json({
+      success: false,
+      message: "Unable to verify your session."
+    });
+  }
+}
+
 // Health check
 app.get("/", (req, res) => {
   res.json({
@@ -38,12 +101,15 @@ app.get("/", (req, res) => {
     endpoints: {
       booking: "POST /api/bookings",
       databaseStatus: "GET /api/database-status",
-      configCheck: "GET /api/config-check"
+      configCheck: "GET /api/config-check",
+      dashboardLogin: "POST /api/dashboard/login",
+      dashboardBookings: "GET /api/dashboard/bookings",
+      dashboardExport: "GET /api/dashboard/export"
     }
   });
 });
 
-// Check environment configuration without exposing secrets
+// Configuration check without exposing secrets
 app.get("/api/config-check", (req, res) => {
   res.json({
     supabaseConfigured: Boolean(supabase),
@@ -53,11 +119,16 @@ app.get("/api/config-check", (req, res) => {
     infinitySenderIdPresent: Boolean(
       process.env.INFINITY_SENDER_ID?.trim()
     ),
+    dashboardConfigured: Boolean(
+      supabase &&
+      authClient &&
+      allowedDashboardEmail
+    ),
     nodeEnvironment: process.env.NODE_ENV || "not set"
   });
 });
 
-// Check the Supabase database connection
+// Database status
 app.get("/api/database-status", async (req, res) => {
   if (!supabase) {
     return res.status(500).json({
@@ -96,7 +167,198 @@ app.get("/api/database-status", async (req, res) => {
   }
 });
 
-// Create a booking
+// Client login
+app.post("/api/dashboard/login", async (req, res) => {
+  try {
+    if (!authClient || !allowedDashboardEmail) {
+      return res.status(500).json({
+        success: false,
+        message: "Dashboard authentication is not configured."
+      });
+    }
+
+    const email =
+      typeof req.body?.email === "string"
+        ? req.body.email.trim().toLowerCase()
+        : "";
+
+    const password =
+      typeof req.body?.password === "string"
+        ? req.body.password
+        : "";
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and password are required."
+      });
+    }
+
+    if (email !== allowedDashboardEmail) {
+      return res.status(403).json({
+        success: false,
+        message: "This account is not authorized for the dashboard."
+      });
+    }
+
+    const { data, error } =
+      await authClient.auth.signInWithPassword({
+        email,
+        password
+      });
+
+    if (
+      error ||
+      !data.user ||
+      !data.session ||
+      (data.user.email || "").trim().toLowerCase() !==
+        allowedDashboardEmail
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password."
+      });
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+
+    return res.json({
+      success: true,
+      access_token: data.session.access_token,
+      user: {
+        email: data.user.email
+      }
+    });
+  } catch (error) {
+    console.error("Dashboard login failed:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to sign in. Please try again."
+    });
+  }
+});
+
+// Fetch bookings for the authenticated client
+app.get(
+  "/api/dashboard/bookings",
+  authorizeDashboard,
+  async (req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from("consultation_bookings")
+        .select(
+          "id, booking_id, customer_name, customer_email, whatsapp_number, booking_date, booking_time, nutritionist_name, status, timezone"
+        )
+        .order("booking_date", { ascending: false })
+        .order("booking_time", { ascending: false })
+        .limit(5000);
+
+      if (error) {
+        console.error("Dashboard booking query failed:", error.code);
+
+        return res.status(500).json({
+          success: false,
+          message: "Unable to load bookings."
+        });
+      }
+
+      res.setHeader("Cache-Control", "no-store");
+
+      return res.json({
+        success: true,
+        bookings: data || []
+      });
+    } catch (error) {
+      console.error("Dashboard bookings failed:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to load bookings."
+      });
+    }
+  }
+);
+
+// Export bookings to an actual Excel workbook
+app.get(
+  "/api/dashboard/export",
+  authorizeDashboard,
+  async (req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from("consultation_bookings")
+        .select(
+          "booking_id, customer_name, customer_email, whatsapp_number, booking_date, booking_time, nutritionist_name, status, timezone"
+        )
+        .order("booking_date", { ascending: false })
+        .order("booking_time", { ascending: false })
+        .limit(5000);
+
+      if (error) {
+        console.error("Excel export query failed:", error.code);
+
+        return res.status(500).json({
+          success: false,
+          message: "Unable to export bookings."
+        });
+      }
+
+      const workbook = new ExcelJS.Workbook();
+
+      workbook.creator = "Nutrify";
+      workbook.created = new Date();
+
+      const sheet = workbook.addWorksheet("Consultation Bookings");
+
+      sheet.columns = [
+        { header: "Booking ID", key: "booking_id", width: 30 },
+        { header: "Customer", key: "customer_name", width: 25 },
+        { header: "Email", key: "customer_email", width: 32 },
+        { header: "WhatsApp", key: "whatsapp_number", width: 20 },
+        { header: "Date", key: "booking_date", width: 16 },
+        { header: "Time", key: "booking_time", width: 16 },
+        { header: "Nutritionist", key: "nutritionist_name", width: 25 },
+        { header: "Status", key: "status", width: 16 },
+        { header: "Timezone", key: "timezone", width: 22 }
+      ];
+
+      sheet.addRows(data || []);
+      sheet.getRow(1).font = { bold: true };
+      sheet.views = [{ state: "frozen", ySplit: 1 }];
+      sheet.autoFilter = {
+        from: "A1",
+        to: "I1"
+      };
+
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        'attachment; filename="nutrify-bookings.xlsx"'
+      );
+
+      res.setHeader("Cache-Control", "no-store");
+
+      await workbook.xlsx.write(res);
+      return res.end();
+    } catch (error) {
+      console.error("Excel export failed:", error.message);
+
+      if (!res.headersSent) {
+        return res.status(500).json({
+          success: false,
+          message: "Unable to generate the Excel file."
+        });
+      }
+    }
+  }
+);
+
+// Create booking — existing WhatsApp workflow retained
 app.post("/api/bookings", async (req, res) => {
   try {
     if (!supabase) {
@@ -171,7 +433,6 @@ app.post("/api/bookings", async (req, res) => {
       nutritionist_name: normalizedNutritionist
     };
 
-    // 1. Save the booking before sending WhatsApp.
     const { data: savedBooking, error: saveError } = await supabase
       .from("consultation_bookings")
       .insert({
@@ -210,7 +471,6 @@ app.post("/api/bookings", async (req, res) => {
       });
     }
 
-    // 2. Send WhatsApp using the existing Infinity Connect API.
     let infinityStatus = "sent";
     let infinityMessageId = "accepted";
     let infinityError = "None";
@@ -236,7 +496,6 @@ app.post("/api/bookings", async (req, res) => {
       });
 
       const responseText = await infinityResponse.text();
-
       let providerResponse = null;
 
       try {
@@ -270,7 +529,6 @@ app.post("/api/bookings", async (req, res) => {
       console.error("Infinity Connect request failed:", error.message);
     }
 
-    // 3. Update the existing database record with the message result.
     const { error: updateError } = await supabase
       .from("consultation_bookings")
       .update({
@@ -296,7 +554,6 @@ app.post("/api/bookings", async (req, res) => {
       });
     }
 
-    // 4. Return the booking result.
     return res.status(200).json({
       success: true,
       message:
