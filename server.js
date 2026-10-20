@@ -4,6 +4,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { randomUUID } = require("crypto");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,348 +15,107 @@ app.use(express.json());
 const INFINITY_API_URL =
   "https://dev.infinityconnect.ai/config-service/api/v1/public/templates/appoinment-fixed-message/send";
 
-const SHOPIFY_API_VERSION = "2026-07";
-const METAOBJECT_TYPE = "consultation_booking";
+// Supabase connection
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
 
-let cachedShopifyToken = null;
-let tokenExpiresAt = 0;
-
-function getShopDomain() {
-  return (process.env.SHOPIFY_SHOP || "")
-    .trim()
-    .replace(/^https?:\/\//i, "")
-    .replace(/\/+$/, "");
-}
-
-async function getShopifyToken() {
-  if (cachedShopifyToken && Date.now() < tokenExpiresAt - 60000) {
-    return cachedShopifyToken;
-  }
-
-  const shop = getShopDomain();
-  const clientId = process.env.SHOPIFY_CLIENT_ID;
-  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
-
-  if (!shop || !clientId || !clientSecret) {
-    throw new Error("Shopify environment variables are missing.");
-  }
-
-  // Shopify Client Credentials grant: form-encoded request.
-  const response = await fetch(
-    `https://${shop}/admin/oauth/access_token`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: new URLSearchParams({
-        grant_type: "client_credentials",
-        client_id: clientId,
-        client_secret: clientSecret
+const supabase =
+  supabaseUrl && supabaseSecretKey
+    ? createClient(supabaseUrl, supabaseSecretKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false
+        }
       })
-    }
-  );
+    : null;
 
-  const responseText = await response.text();
-
-  let result;
-  try {
-    result = responseText ? JSON.parse(responseText) : {};
-  } catch {
-    result = {};
-  }
-
-  if (!response.ok || !result.access_token) {
-    console.error("Shopify token request failed:", {
-      status: response.status,
-      error: result.error || "unknown_error",
-      description:
-        result.error_description || "No error description returned"
-    });
-
-    throw new Error("Shopify authentication failed.");
-  }
-
-  cachedShopifyToken = result.access_token;
-  tokenExpiresAt =
-    Date.now() + Number(result.expires_in || 86400) * 1000;
-
-  return cachedShopifyToken;
-}
-
-async function shopifyGraphQL(query, variables = {}) {
-  const shop = getShopDomain();
-  const token = await getShopifyToken();
-
-  const response = await fetch(
-    `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": token
-      },
-      body: JSON.stringify({ query, variables })
-    }
-  );
-
-  const result = await response.json();
-
-  if (!response.ok || result.errors?.length) {
-    console.error(
-      "Shopify GraphQL request failed:",
-      response.status,
-      JSON.stringify(result.errors || [])
-    );
-
-    throw new Error("Shopify API request failed.");
-  }
-
-  return result.data;
-}
-
-async function getMetaobjectDefinition() {
-  const data = await shopifyGraphQL(
-    `query BookingDefinition($type: String!) {
-      metaobjectDefinitionByType(type: $type) {
-        id
-        type
-        fieldDefinitions {
-          key
-          type {
-            name
-          }
-          required
-        }
-      }
-    }`,
-    { type: METAOBJECT_TYPE }
-  );
-
-  const definition = data.metaobjectDefinitionByType;
-
-  if (!definition) {
-    throw new Error("consultation_booking definition not found.");
-  }
-
-  return definition;
-}
-
-async function createBookingMetaobject(booking) {
-  const definition = await getMetaobjectDefinition();
-
-  const fieldKeys = new Set(
-    definition.fieldDefinitions.map(field => field.key)
-  );
-
-  const now = new Date().toISOString();
-
-  const values = {
-    booking_id: booking.booking_id,
-    customer_name: booking.customer_name,
-    customer_email: booking.customer_email || "Not provided",
-    whatsapp_number: booking.whatsapp_number,
-    booking_date: booking.booking_date,
-    booking_time: booking.booking_time,
-    timezone: booking.timezone,
-    nutritionist_name: booking.nutritionist_name || "Not assigned",
-    status: "pending",
-    infinity_status: "pending",
-    infinity_message_id: "pending",
-    created_at: now,
-    infinity_error: "None",
-    updated_at: now
-  };
-
-  const fields = Object.entries(values)
-    .filter(([key]) => fieldKeys.has(key))
-    .map(([key, value]) => ({
-      key,
-      value: String(value)
-    }));
-
-  const missing = definition.fieldDefinitions
-    .filter(field => field.required)
-    .filter(field => {
-      const item = fields.find(entry => entry.key === field.key);
-      return !item || !item.value.trim();
-    });
-
-  if (missing.length) {
-    throw new Error(
-      `Required metaobject fields missing: ${missing
-        .map(field => field.key)
-        .join(", ")}`
-    );
-  }
-
-  const data = await shopifyGraphQL(
-    `mutation CreateBooking($metaobject: MetaobjectCreateInput!) {
-      metaobjectCreate(metaobject: $metaobject) {
-        metaobject {
-          id
-          handle
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }`,
-    {
-      metaobject: {
-        type: METAOBJECT_TYPE,
-        fields
-      }
-    }
-  );
-
-  const result = data.metaobjectCreate;
-
-  if (result.userErrors?.length || !result.metaobject) {
-    console.error(
-      "Metaobject creation errors:",
-      JSON.stringify(result.userErrors || [])
-    );
-
-    throw new Error("Shopify could not create the booking.");
-  }
-
-  return result.metaobject;
-}
-
-async function updateBookingMetaobject(id, values) {
-  const definition = await getMetaobjectDefinition();
-
-  const fieldKeys = new Set(
-    definition.fieldDefinitions.map(field => field.key)
-  );
-
-  const fields = Object.entries(values)
-    .filter(([key]) => fieldKeys.has(key))
-    .map(([key, value]) => ({
-      key,
-      value: String(value)
-    }));
-
-  const data = await shopifyGraphQL(
-    `mutation UpdateBooking($id: ID!, $metaobject: MetaobjectUpdateInput!) {
-      metaobjectUpdate(id: $id, metaobject: $metaobject) {
-        metaobject {
-          id
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }`,
-    {
-      id,
-      metaobject: { fields }
-    }
-  );
-
-  const result = data.metaobjectUpdate;
-
-  if (result.userErrors?.length || !result.metaobject) {
-    console.error(
-      "Metaobject update errors:",
-      JSON.stringify(result.userErrors || [])
-    );
-
-    throw new Error("Shopify could not update the booking.");
-  }
-}
-
+// Health check
 app.get("/", (req, res) => {
   res.json({
     success: true,
     message: "Nutrify Booking Backend is running",
+    database: "Supabase",
     endpoints: {
       booking: "POST /api/bookings",
-      status: "GET /api/shopify-status",
-      shopifyTest: "GET /test-shopify",
-      metaobjectTest: "GET /test-metaobject"
+      databaseStatus: "GET /api/database-status",
+      configCheck: "GET /api/config-check"
     }
   });
 });
 
+// Check environment configuration without exposing secrets
 app.get("/api/config-check", (req, res) => {
   res.json({
+    supabaseConfigured: Boolean(supabase),
     infinityApiKeyPresent: Boolean(
       process.env.INFINITY_API_KEY_NEW?.trim()
     ),
     infinitySenderIdPresent: Boolean(
       process.env.INFINITY_SENDER_ID?.trim()
     ),
-    shopifyConfigured: Boolean(
-      process.env.SHOPIFY_SHOP &&
-      process.env.SHOPIFY_CLIENT_ID &&
-      process.env.SHOPIFY_CLIENT_SECRET
-    ),
     nodeEnvironment: process.env.NODE_ENV || "not set"
   });
 });
 
-app.get("/api/shopify-status", async (req, res) => {
-  try {
-    const definition = await getMetaobjectDefinition();
-
-    res.json({
-      authenticated: true,
-      metaobjectDefinitionFound: true,
-      type: definition.type,
-      fieldCount: definition.fieldDefinitions.length
-    });
-  } catch (error) {
-    console.error("Shopify status check failed:", error.message);
-
-    res.status(500).json({
-      authenticated: false,
-      message: "Shopify connection or metaobject check failed."
-    });
-  }
-});
-
-app.get("/test-shopify", async (req, res) => {
-  try {
-    await getShopifyToken();
-
-    res.json({
-      success: true,
-      message: "Shopify authentication succeeded."
-    });
-  } catch (error) {
-    res.status(500).json({
+// Check the Supabase database connection
+app.get("/api/database-status", async (req, res) => {
+  if (!supabase) {
+    return res.status(500).json({
       success: false,
-      message: "Shopify authentication failed."
+      message: "Supabase environment variables are missing."
     });
   }
-});
 
-app.get("/test-metaobject", async (req, res) => {
   try {
-    const definition = await getMetaobjectDefinition();
+    const { error } = await supabase
+      .from("consultation_bookings")
+      .select("id")
+      .limit(1);
 
-    res.json({
+    if (error) {
+      console.error("Supabase status check failed:", error.code);
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to access the bookings table."
+      });
+    }
+
+    return res.json({
       success: true,
-      type: definition.type,
-      fields: definition.fieldDefinitions.map(field => ({
-        key: field.key,
-        required: field.required
-      }))
+      message: "Supabase connection successful.",
+      table: "consultation_bookings"
     });
   } catch (error) {
-    res.status(500).json({
+    console.error("Database status check failed:", error.message);
+
+    return res.status(500).json({
       success: false,
-      message: "Unable to read the metaobject definition."
+      message: "Database connection failed."
     });
   }
 });
 
+// Create a booking
 app.post("/api/bookings", async (req, res) => {
   try {
+    if (!supabase) {
+      return res.status(500).json({
+        success: false,
+        message: "Supabase is not configured."
+      });
+    }
+
+    if (
+      !process.env.INFINITY_API_KEY_NEW ||
+      !process.env.INFINITY_SENDER_ID
+    ) {
+      return res.status(500).json({
+        success: false,
+        message: "WhatsApp service is not configured."
+      });
+    }
+
     const {
       customer_name,
       customer_email,
@@ -367,8 +127,10 @@ app.post("/api/bookings", async (req, res) => {
     } = req.body || {};
 
     if (
-      !customer_name?.trim() ||
-      !whatsapp_number?.trim() ||
+      typeof customer_name !== "string" ||
+      !customer_name.trim() ||
+      typeof whatsapp_number !== "string" ||
+      !whatsapp_number.trim() ||
       !booking_date ||
       !booking_time
     ) {
@@ -386,30 +148,69 @@ app.post("/api/bookings", async (req, res) => {
       });
     }
 
-    if (
-      !process.env.INFINITY_API_KEY_NEW ||
-      !process.env.INFINITY_SENDER_ID
-    ) {
-      return res.status(500).json({
-        success: false,
-        message: "WhatsApp service is not configured."
-      });
-    }
+    const normalizedNutritionist =
+      typeof nutritionist_name === "string" &&
+      nutritionist_name.trim()
+        ? nutritionist_name.trim()
+        : "Not assigned";
 
     const booking = {
       booking_id: `NUT-${randomUUID()}`,
-      customer_name: String(customer_name).trim(),
-      customer_email: String(customer_email || "").trim(),
-      whatsapp_number: String(whatsapp_number).trim(),
+      customer_name: customer_name.trim(),
+      customer_email:
+        typeof customer_email === "string"
+          ? customer_email.trim() || null
+          : null,
+      whatsapp_number: whatsapp_number.trim(),
       booking_date: String(booking_date),
       booking_time: String(booking_time).trim(),
-      timezone: String(timezone || "Asia/Lagos").trim(),
-      nutritionist_name: String(nutritionist_name || "").trim()
+      timezone:
+        typeof timezone === "string" && timezone.trim()
+          ? timezone.trim()
+          : "Africa/Lagos",
+      nutritionist_name: normalizedNutritionist
     };
 
-    // Save first so a WhatsApp failure does not lose the booking.
-    const savedBooking = await createBookingMetaobject(booking);
+    // 1. Save the booking before sending WhatsApp.
+    const { data: savedBooking, error: saveError } = await supabase
+      .from("consultation_bookings")
+      .insert({
+        booking_id: booking.booking_id,
+        customer_name: booking.customer_name,
+        customer_email: booking.customer_email,
+        whatsapp_number: booking.whatsapp_number,
+        booking_date: booking.booking_date,
+        booking_time: booking.booking_time,
+        timezone: booking.timezone,
+        nutritionist_name: booking.nutritionist_name,
+        status: "pending",
+        infinity_status: "pending",
+        infinity_message_id: "pending",
+        infinity_error: "None"
+      })
+      .select("id, booking_id")
+      .single();
 
+    if (saveError) {
+      if (saveError.code === "23505") {
+        return res.status(409).json({
+          success: false,
+          message: "This time slot is already booked."
+        });
+      }
+
+      console.error("Supabase booking save failed:", {
+        code: saveError.code,
+        message: saveError.message
+      });
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to save the booking. Please try again."
+      });
+    }
+
+    // 2. Send WhatsApp using the existing Infinity Connect API.
     let infinityStatus = "sent";
     let infinityMessageId = "accepted";
     let infinityError = "None";
@@ -436,12 +237,15 @@ app.post("/api/bookings", async (req, res) => {
 
       const responseText = await infinityResponse.text();
 
-      let providerResponse = responseText;
+      let providerResponse = null;
+
       try {
         providerResponse = responseText
           ? JSON.parse(responseText)
           : null;
-      } catch {}
+      } catch {
+        providerResponse = null;
+      }
 
       if (!infinityResponse.ok) {
         infinityStatus = "failed";
@@ -462,45 +266,54 @@ app.post("/api/bookings", async (req, res) => {
       infinityStatus = "failed";
       infinityMessageId = "None";
       infinityError = "Infinity Connect request failed";
+
+      console.error("Infinity Connect request failed:", error.message);
     }
 
-    let updateFailed = false;
-
-    try {
-      await updateBookingMetaobject(savedBooking.id, {
+    // 3. Update the existing database record with the message result.
+    const { error: updateError } = await supabase
+      .from("consultation_bookings")
+      .update({
         status: "confirmed",
         infinity_status: infinityStatus,
         infinity_message_id: infinityMessageId,
         infinity_error: infinityError,
         updated_at: new Date().toISOString()
+      })
+      .eq("id", savedBooking.id);
+
+    if (updateError) {
+      console.error("Booking status update failed:", updateError.code);
+
+      return res.status(200).json({
+        success: true,
+        message:
+          "Booking saved, but its final status could not be updated.",
+        booking_id: booking.booking_id,
+        database_id: savedBooking.id,
+        whatsapp_status: infinityStatus,
+        status_update_failed: true
       });
-    } catch (error) {
-      updateFailed = true;
-      console.error(
-        "Booking status update failed:",
-        error.message
-      );
     }
 
+    // 4. Return the booking result.
     return res.status(200).json({
       success: true,
-      message: infinityStatus === "sent"
-        ? "Booking saved to Shopify and WhatsApp message accepted."
-        : "Booking saved to Shopify, but the WhatsApp message failed.",
+      message:
+        infinityStatus === "sent"
+          ? "Booking saved to Supabase and WhatsApp message accepted."
+          : "Booking saved to Supabase, but the WhatsApp message failed.",
       booking_id: booking.booking_id,
-      metaobject_id: savedBooking.id,
+      database_id: savedBooking.id,
       whatsapp_status: infinityStatus,
-      status_update_failed: updateFailed
+      status_update_failed: false
     });
   } catch (error) {
-    console.error(
-      "Booking processing failed:",
-      error.message
-    );
+    console.error("Booking processing failed:", error.message);
 
     return res.status(500).json({
       success: false,
-      message: "Unable to save the booking. Please try again."
+      message: "Unable to process the booking. Please try again."
     });
   }
 });
