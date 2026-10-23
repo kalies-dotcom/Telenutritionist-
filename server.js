@@ -3,6 +3,7 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const path = require("path");
 const { randomUUID } = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -38,9 +39,20 @@ app.get("/", (req, res) => {
     endpoints: {
       booking: "POST /api/bookings",
       databaseStatus: "GET /api/database-status",
-      configCheck: "GET /api/config-check"
+      configCheck: "GET /api/config-check",
+      dashboard: "GET /dashboard",
+      dashboardBookings: "GET /api/dashboard/bookings"
     }
   });
+});
+
+// Serve dashboard HTML
+app.get("/dashboard", (req, res) => {
+  res.sendFile(path.join(__dirname, "dashboard.html"));
+});
+
+app.get("/dashboard.html", (req, res) => {
+  res.sendFile(path.join(__dirname, "dashboard.html"));
 });
 
 // Check environment configuration without exposing secrets
@@ -57,7 +69,7 @@ app.get("/api/config-check", (req, res) => {
   });
 });
 
-// Check the Supabase database connection
+// Check Supabase connection
 app.get("/api/database-status", async (req, res) => {
   if (!supabase) {
     return res.status(500).json({
@@ -96,7 +108,7 @@ app.get("/api/database-status", async (req, res) => {
   }
 });
 
-// Create a booking
+// Create a consultation booking
 app.post("/api/bookings", async (req, res) => {
   try {
     if (!supabase) {
@@ -171,7 +183,7 @@ app.post("/api/bookings", async (req, res) => {
       nutritionist_name: normalizedNutritionist
     };
 
-    // 1. Save the booking before sending WhatsApp.
+    // Save booking to Supabase
     const { data: savedBooking, error: saveError } = await supabase
       .from("consultation_bookings")
       .insert({
@@ -210,7 +222,7 @@ app.post("/api/bookings", async (req, res) => {
       });
     }
 
-    // 2. Send WhatsApp using the existing Infinity Connect API.
+    // Send WhatsApp via Infinity Connect
     let infinityStatus = "sent";
     let infinityMessageId = "accepted";
     let infinityError = "None";
@@ -236,13 +248,10 @@ app.post("/api/bookings", async (req, res) => {
       });
 
       const responseText = await infinityResponse.text();
-
       let providerResponse = null;
 
       try {
-        providerResponse = responseText
-          ? JSON.parse(responseText)
-          : null;
+        providerResponse = responseText ? JSON.parse(responseText) : null;
       } catch {
         providerResponse = null;
       }
@@ -250,8 +259,7 @@ app.post("/api/bookings", async (req, res) => {
       if (!infinityResponse.ok) {
         infinityStatus = "failed";
         infinityMessageId = "None";
-        infinityError =
-          `Infinity Connect HTTP ${infinityResponse.status}`;
+        infinityError = `Infinity Connect HTTP ${infinityResponse.status}`;
       } else {
         const providerId =
           providerResponse?.messageId ||
@@ -270,7 +278,7 @@ app.post("/api/bookings", async (req, res) => {
       console.error("Infinity Connect request failed:", error.message);
     }
 
-    // 3. Update the existing database record with the message result.
+    // Update saved booking with WhatsApp result
     const { error: updateError } = await supabase
       .from("consultation_bookings")
       .update({
@@ -296,7 +304,6 @@ app.post("/api/bookings", async (req, res) => {
       });
     }
 
-    // 4. Return the booking result.
     return res.status(200).json({
       success: true,
       message:
@@ -317,15 +324,6 @@ app.post("/api/bookings", async (req, res) => {
     });
   }
 });
-
-if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log("Nutrify Booking Backend running on port", PORT);
-  });
-}
-
-module.exports = app;
-
 
 // Dashboard API: fetch consultation bookings
 app.get("/api/dashboard/bookings", async (req, res) => {
@@ -367,7 +365,7 @@ app.get("/api/dashboard/bookings", async (req, res) => {
   }
 });
 
-
+// Start the server once
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log("Nutrify Booking Backend running on port", PORT);
