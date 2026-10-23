@@ -1,0 +1,325 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nutrify Consultation Dashboard</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: Arial, sans-serif;
+      background: #f5f7fb;
+      color: #1f2937;
+    }
+    .container { max-width: 1200px; margin: auto; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    h1 { margin: 0 0 6px; font-size: 26px; }
+    .muted { color: #64748b; font-size: 14px; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    button {
+      padding: 11px 15px;
+      border: 0;
+      border-radius: 8px;
+      background: #176b52;
+      color: white;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button.secondary { background: #334155; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+    .card, .panel {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card strong { display: block; font-size: 28px; margin-top: 10px; }
+    .toolbar { margin-bottom: 16px; }
+    input {
+      width: 100%;
+      max-width: 440px;
+      padding: 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 850px; }
+    th, td {
+      padding: 13px 12px;
+      text-align: left;
+      border-bottom: 1px solid #e2e8f0;
+      font-size: 13px;
+    }
+    th { background: #f8fafc; color: #475569; }
+    #message { margin: 14px 0; color: #475569; }
+    @media (max-width: 650px) {
+      body { padding: 14px; }
+      .cards { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <header>
+      <div>
+        <h1>Nutrify Consultation Dashboard</h1>
+        <div class="muted">Consultation booking management</div>
+      </div>
+      <div class="actions">
+        <button class="secondary" id="refreshBtn">Refresh</button>
+        <button id="downloadBtn" disabled>Download CSV</button>
+      </div>
+    </header>
+
+    <section class="cards">
+      <div class="card">Total bookings<strong id="total">—</strong></div>
+      <div class="card">Pending bookings<strong id="pending">—</strong></div>
+      <div class="card">Confirmed bookings<strong id="confirmed">—</strong></div>
+    </section>
+
+    <section class="panel">
+      <div class="toolbar">
+        <input id="search" type="search"
+          placeholder="Search customer, email, phone or nutritionist">
+      </div>
+      <div id="message" role="status">Dashboard is not connected yet.</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Customer</th>
+              <th>Email</th>
+              <th>WhatsApp</th>
+              <th>Date</th>
+              <th>Time</th>
+              <th>Nutritionist</th>
+              <th>Status</th>
+              <th>WhatsApp status</th>
+            </tr>
+          </thead>
+          <tbody id="bookingRows">
+            <tr><td colspan="8">Bookings will appear here after the secure API is connected.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+
+<script>
+const API_URL =
+  "https://nutrify-booking-backend.vercel.app/api/dashboard/bookings";
+
+  const message = document.getElementById("message");
+  const refreshBtn = document.getElementById("refreshBtn");
+  const downloadBtn = document.getElementById("downloadBtn");
+  const searchInput = document.getElementById("search");
+  const bookingRows = document.getElementById("bookingRows");
+
+  let allBookings = [];
+
+  function getValue(booking, ...keys) {
+    for (const key of keys) {
+      if (booking[key] !== undefined && booking[key] !== null) {
+        return String(booking[key]);
+      }
+    }
+    return "";
+  }
+
+  function escapeHTML(value) {
+    return String(value).replace(/[&<>"']/g, char => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[char]);
+  }
+
+  function renderBookings() {
+    const query = searchInput.value.trim().toLowerCase();
+
+    const filtered = allBookings.filter(booking => {
+      const searchable = [
+        getValue(booking, "customer_name", "full_name", "name"),
+        getValue(booking, "customer_email", "email"),
+        getValue(booking, "whatsapp_number", "mobile_number", "phone"),
+        getValue(booking, "nutritionist_name", "nutritionist"),
+        getValue(booking, "status", "booking_status")
+      ].join(" ").toLowerCase();
+
+      return searchable.includes(query);
+    });
+
+    if (!filtered.length) {
+      bookingRows.innerHTML =
+        `<tr><td colspan="8">No bookings found.</td></tr>`;
+      return;
+    }
+
+    bookingRows.innerHTML = filtered.map(booking => {
+      const name = getValue(
+        booking, "customer_name", "full_name", "name"
+      );
+      const email = getValue(booking, "customer_email", "email");
+      const phone = getValue(
+        booking, "whatsapp_number", "mobile_number", "phone"
+      );
+      const date = getValue(booking, "booking_date", "date");
+      const time = getValue(booking, "booking_time", "time");
+      const nutritionist = getValue(
+        booking, "nutritionist_name", "nutritionist"
+      );
+      const status = getValue(
+        booking, "status", "booking_status"
+      ) || "Pending";
+      const whatsappStatus = getValue(
+        booking, "whatsapp_status", "whatsapp_message_status"
+      ) || "—";
+
+      return `
+        <tr>
+          <td>${escapeHTML(name || "—")}</td>
+          <td>${escapeHTML(email || "—")}</td>
+          <td>${escapeHTML(phone || "—")}</td>
+          <td>${escapeHTML(date || "—")}</td>
+          <td>${escapeHTML(time || "—")}</td>
+          <td>${escapeHTML(nutritionist || "—")}</td>
+          <td>${escapeHTML(status)}</td>
+          <td>${escapeHTML(whatsappStatus)}</td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  async function loadBookings() {
+    refreshBtn.disabled = true;
+    downloadBtn.disabled = true;
+    message.textContent = "Loading bookings...";
+
+    try {
+      const response = await fetch(API_URL, {
+        headers: { "Accept": "application/json" }
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "Unable to load bookings.");
+      }
+
+      if (!Array.isArray(result.bookings)) {
+        throw new Error("Unexpected API response format.");
+      }
+
+      allBookings = result.bookings;
+
+      document.getElementById("total").textContent =
+        allBookings.length;
+
+      document.getElementById("pending").textContent =
+        allBookings.filter(b =>
+          getValue(b, "status", "booking_status").toLowerCase()
+            === "pending"
+        ).length;
+
+      document.getElementById("confirmed").textContent =
+        allBookings.filter(b =>
+          getValue(b, "status", "booking_status").toLowerCase()
+            === "confirmed"
+        ).length;
+
+      renderBookings();
+      downloadBtn.disabled = allBookings.length === 0;
+      message.textContent =
+        `Loaded ${allBookings.length} booking(s).`;
+    } catch (error) {
+      message.textContent =
+        "Could not load bookings: " + error.message;
+      bookingRows.innerHTML =
+        `<tr><td colspan="8">Unable to load bookings. Check the API and try Refresh.</td></tr>`;
+      document.getElementById("total").textContent = "—";
+      document.getElementById("pending").textContent = "—";
+      document.getElementById("confirmed").textContent = "—";
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  }
+
+  function downloadCSV() {
+    const query = searchInput.value.trim().toLowerCase();
+
+    const filtered = allBookings.filter(booking => {
+      const searchable = [
+        getValue(booking, "customer_name", "full_name", "name"),
+        getValue(booking, "customer_email", "email"),
+        getValue(booking, "whatsapp_number", "mobile_number", "phone"),
+        getValue(booking, "nutritionist_name", "nutritionist"),
+        getValue(booking, "status", "booking_status")
+      ].join(" ").toLowerCase();
+
+      return searchable.includes(query);
+    });
+
+    if (!filtered.length) return;
+
+    const columns = [
+      ["Customer", b => getValue(b, "customer_name", "full_name", "name")],
+      ["Email", b => getValue(b, "customer_email", "email")],
+      ["WhatsApp", b => getValue(b, "whatsapp_number", "mobile_number", "phone")],
+      ["Date", b => getValue(b, "booking_date", "date")],
+      ["Time", b => getValue(b, "booking_time", "time")],
+      ["Nutritionist", b => getValue(b, "nutritionist_name", "nutritionist")],
+      ["Status", b => getValue(b, "status", "booking_status")],
+      ["WhatsApp status", b => getValue(b, "whatsapp_status", "whatsapp_message_status")]
+    ];
+
+    const csvCell = value =>
+      '"' + String(value ?? "").replace(/"/g, '""') + '"';
+
+    const csv = [
+      columns.map(([title]) => csvCell(title)).join(","),
+      ...filtered.map(booking =>
+        columns.map(([, get]) => csvCell(get(booking))).join(",")
+      )
+    ].join("\r\n");
+
+    const blob = new Blob(["\uFEFF" + csv], {
+      type: "text/csv;charset=utf-8;"
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "nutrify-consultation-bookings.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  refreshBtn.addEventListener("click", loadBookings);
+  downloadBtn.addEventListener("click", downloadCSV);
+  searchInput.addEventListener("input", renderBookings);
+
+  loadBookings();
+</script>
+
+</body>
+</html>

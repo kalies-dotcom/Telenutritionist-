@@ -325,3 +325,53 @@ if (require.main === module) {
 }
 
 module.exports = app;
+
+
+// Dashboard API: fetch consultation bookings
+app.get("/api/dashboard/bookings", async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({
+        success: false,
+        message: "Supabase is not configured."
+      });
+    }
+
+    const { data, error } = await supabase
+      .from("consultation_bookings")
+      .select("*")
+      .order("booking_date", { ascending: false })
+      .order("booking_time", { ascending: false });
+
+    if (error) {
+      console.error("Dashboard bookings query failed:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to fetch consultation bookings."
+      });
+    }
+
+    return res.json({
+      success: true,
+      count: data.length,
+      bookings: data
+    });
+  } catch (error) {
+    console.error("Dashboard API failed:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load dashboard bookings."
+    });
+  }
+});
+
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log("Nutrify Booking Backend running on port", PORT);
+  });
+}
+
+module.exports = app;
